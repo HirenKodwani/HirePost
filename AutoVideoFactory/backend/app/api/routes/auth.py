@@ -12,7 +12,7 @@ logger = get_logger("autovideofactory.api.auth")
 router = APIRouter()
 
 
-REDIRECT_URI = "http://localhost:8080"
+REDIRECT_URI = "http://localhost:8080/api/v1/auth/youtube/callback"
 
 
 @router.get("/youtube/login")
@@ -46,16 +46,18 @@ async def youtube_login():
 @router.get("/youtube/callback")
 async def youtube_callback(
     code: str = Query(None),
+    state: str = Query(None),
     error: str = Query(None),
 ):
     """Step 2: Handle OAuth callback after user authorizes."""
+    logger.info(f"OAuth callback received: code={'present' if code else 'missing'}, state={'present' if state else 'missing'}, error={error}")
     if error:
         return HTMLResponse(f"<h2>Authorization Failed</h2><p>Error: {error}</p>", status_code=400)
     if not code:
         return HTMLResponse("<h2>Missing code</h2>", status_code=400)
 
     try:
-        result = await youtube_auth_service.exchange_code(code, redirect_uri=REDIRECT_URI)
+        result = await youtube_auth_service.exchange_code(code, state=state or "", redirect_uri=REDIRECT_URI)
         logger.info(f"YouTube authorized: {result['email']} ({result['channel_name']})")
         return HTMLResponse(f"""
         <html><body style="font-family:sans-serif;padding:40px;text-align:center;">

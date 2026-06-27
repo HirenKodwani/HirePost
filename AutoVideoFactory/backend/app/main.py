@@ -142,11 +142,5 @@ async def health_check() -> dict[str, str]:
 
 
 @app.get("/")
-async def root_handler(code: str = None, error: str = None):
-    """Catch OAuth redirect from Google at root level."""
-    if code:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=f"/api/v1/auth/youtube/callback?code={code}")
-    if error:
-        return HTMLResponse(f"<h2>Authorization Failed</h2><p>Error: {error}</p>")
+async def root_handler():
     return HTMLResponse("<h2>AutoVideoFactory Backend</h2><p>Server is running.</p>")

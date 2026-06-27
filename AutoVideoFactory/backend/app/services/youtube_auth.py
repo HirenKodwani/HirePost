@@ -16,7 +16,12 @@ from ..models.content import YouTubeAccount
 
 logger = get_logger("autovideofactory.services.youtube_auth")
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+]
 
 SESSIONS_DIR = Path(settings.sessions_dir) / "youtube"
 
@@ -24,6 +29,23 @@ SESSIONS_DIR = Path(settings.sessions_dir) / "youtube"
 class YouTubeAuthService:
     def __init__(self) -> None:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        self._flows: dict[str, InstalledAppFlow] = {}
+
+    def _make_flow(self, redirect_uri: str) -> InstalledAppFlow:
+        flow = InstalledAppFlow.from_client_config(
+            {
+                "installed": {
+                    "client_id": settings.google_client_id,
+                    "client_secret": settings.google_client_secret,
+                    "redirect_uris": [redirect_uri],
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            },
+            SCOPES,
+        )
+        flow.redirect_uri = redirect_uri
+        return flow
 
     def get_authorization_url(self, redirect_uri: str = "http://localhost:8080/auth/youtube/callback") -> str:
         if not settings.google_client_id or not settings.google_client_secret:
@@ -31,43 +53,43 @@ class YouTubeAuthService:
                 "Google OAuth not configured. Set AVF_GOOGLE_CLIENT_ID and AVF_GOOGLE_CLIENT_SECRET",
                 code="OAUTH_NOT_CONFIGURED",
             )
-        flow = InstalledAppFlow.from_client_secrets_file(
-            str(SESSIONS_DIR.parent.parent / "client_secret_129756332718-12jhdvm99p12geokv0ne7tg4o84eeque.apps.googleusercontent.com.json"),
-            SCOPES,
-        )
-        flow.redirect_uri = redirect_uri
-        auth_url, _ = flow.authorization_url(
+        flow = self._make_flow(redirect_uri)
+        auth_url, state = flow.authorization_url(
             access_type="offline",
-            include_granted_scopes="true",
             prompt="consent",
         )
+        self._flows[state] = flow
         return auth_url
 
-    async def exchange_code(self, code: str, redirect_uri: str = "http://localhost:8080/auth/youtube/callback") -> dict[str, Any]:
-        import httpx
-        if not settings.google_client_id or not settings.google_client_secret:
-            raise PublishingError("Google OAuth not configured")
+    async def exchange_code(self, code: str, state: str, redirect_uri: str = "http://localhost:8080/auth/youtube/callback") -> dict[str, Any]:
+        flow = self._flows.pop(state, None)
+        if not flow:
+            raise PublishingError("OAuth session expired. Please re-authorize.", code="OAUTH_SESSION_EXPIRED")
 
-        token_data = {
-            "code": code,
-            "client_id": settings.google_client_id,
-            "client_secret": settings.google_client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        }
-        async with httpx.AsyncClient() as client:
-            resp = await client.post("https://oauth2.googleapis.com/token", data=token_data)
-            if resp.status_code != 200:
-                raise PublishingError(f"Token exchange failed: {resp.text}", code="OAUTH_TOKEN_FAILED")
-            tokens = resp.json()
+        import threading
+        result_container = {}
 
-        refresh_token = tokens.get("refresh_token")
+        def _fetch_token():
+            try:
+                flow.fetch_token(code=code)
+                result_container["tokens"] = flow.credentials
+            except Exception as e:
+                result_container["error"] = e
+
+        thread = threading.Thread(target=_fetch_token, daemon=True)
+        thread.start()
+        thread.join(timeout=30)
+
+        if "error" in result_container:
+            raise PublishingError(f"Token exchange failed: {result_container['error']}", code="OAUTH_TOKEN_FAILED")
+
+        creds = result_container["tokens"]
+        refresh_token = creds.refresh_token
         if not refresh_token:
             raise PublishingError("No refresh_token returned.", code="OAUTH_NO_REFRESH_TOKEN")
 
-        access_token = tokens["access_token"]
-        expires_in = tokens.get("expires_in", 3600)
-        token_expiry = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() + expires_in, tz=timezone.utc)
+        access_token = creds.token
+        token_expiry = creds.expiry
 
         userinfo = await self._get_userinfo(access_token)
         email = userinfo.get("email", "unknown")
