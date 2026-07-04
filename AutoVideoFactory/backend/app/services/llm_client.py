@@ -88,35 +88,42 @@ class OpenAIClient(LLMClient):
         self._http = httpx.AsyncClient(timeout=120.0)
 
     async def generate(self, prompt: str, system_prompt: Optional[str] = None, **kwargs: Any) -> str:
-        try:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
+        import asyncio
+        max_retries = kwargs.pop("max_retries", 5)
+        for attempt in range(max_retries):
+            try:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
 
-            payload = {
-                "model": kwargs.get("model", self._model),
-                "messages": messages,
-                "temperature": kwargs.get("temperature", settings.llm_temperature),
-                "max_tokens": kwargs.get("max_tokens", settings.llm_max_tokens),
-            }
-            if "response_format" in kwargs:
-                payload["response_format"] = kwargs["response_format"]
+                payload = {
+                    "model": kwargs.get("model", self._model),
+                    "messages": messages,
+                    "temperature": kwargs.get("temperature", settings.llm_temperature),
+                    "max_tokens": kwargs.get("max_tokens", settings.llm_max_tokens),
+                }
+                if "response_format" in kwargs:
+                    payload["response_format"] = kwargs["response_format"]
 
-            response = await self._http.post(
-                f"{self._base_url}/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                raise AIClientRateLimitError(retry_after=30) from e
-            raise AIClientError(f"OpenAI request failed: {e}") from e
-        except Exception as e:
-            raise AIClientError(f"OpenAI error: {e}") from e
+                response = await self._http.post(
+                    f"{self._base_url}/chat/completions",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait = min(2 ** attempt * 5, 120)
+                    logger.warning(f"Rate limited (attempt {attempt+1}/{max_retries}), retrying in {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+                raise AIClientError(f"OpenAI request failed: {e}") from e
+            except Exception as e:
+                raise AIClientError(f"OpenAI error: {e}") from e
+        raise AIClientError("Max retries exceeded for OpenAI request")
 
     async def generate_json(self, prompt: str, system_prompt: Optional[str] = None, **kwargs: Any) -> dict[str, Any]:
         result = await self.generate(
