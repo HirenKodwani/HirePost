@@ -81,7 +81,7 @@ class ContentPipeline:
         return None
 
     async def run_full_pipeline(self, config: dict[str, Any]) -> str:
-        pipeline_id = uuid.uuid4().hex
+        pipeline_id = config.pop("_pipeline_id", uuid.uuid4().hex)
         logger.info(f"Starting full pipeline: {pipeline_id}", extra={"config": {k: v for k, v in config.items() if k != "api_key"}})
 
         pipeline = {

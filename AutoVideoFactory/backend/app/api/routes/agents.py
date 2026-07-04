@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Body
 
 from ...agents.orchestrator import AgentOrchestrator
@@ -38,10 +40,19 @@ def _get_pipeline():
         _content_pipeline = ContentPipeline()
     return _content_pipeline
 
+import uuid
+from datetime import datetime, timezone
+
 @router.post("/run-full-pipeline")
 async def run_full_pipeline(data: dict = Body(...)):
     pipe = _get_pipeline()
-    pipeline_id = await pipe.run_full_pipeline(data)
+    pipeline_id = uuid.uuid4().hex
+    pipe._active_pipelines[pipeline_id] = {
+        "id": pipeline_id, "status": "starting", "steps": {},
+        "config": data, "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    data["_pipeline_id"] = pipeline_id
+    asyncio.create_task(pipe.run_full_pipeline(data))
     return {"pipeline_id": pipeline_id, "status": "started"}
 
 @router.get("/pipeline-status/{pipeline_id}")
