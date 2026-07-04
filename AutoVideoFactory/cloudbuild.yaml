@@ -38,5 +38,4 @@ substitutions:
   _SERVICE_ACCOUNT: your-service-account@your-project.iam.gserviceaccount.com
   _GCS_BUCKET: your-gcs-bucket-name
 
-options:
-  logging: CLOUD_LOGGING_ONLY
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body
 
 from ...agents.orchestrator import AgentOrchestrator
+from ...services.pipeline_orchestrator import ContentPipeline
 
 router = APIRouter()
 orchestrator = AgentOrchestrator()
@@ -28,6 +29,16 @@ async def run_pipeline(data: dict = Body(...)):
     pipeline_id = await orchestrator.run_pipeline(name=name, steps=steps)
     return {"pipeline_id": pipeline_id, "status": "started"}
 
+
+_content_pipeline: ContentPipeline = None
+
+@router.post("/run-full-pipeline")
+async def run_full_pipeline(data: dict = Body(...)):
+    global _content_pipeline
+    if _content_pipeline is None:
+        _content_pipeline = ContentPipeline()
+    pipeline_id = await _content_pipeline.run_full_pipeline(data)
+    return {"pipeline_id": pipeline_id, "status": "started"}
 
 @router.post("/pipeline/{pipeline_id}/cancel")
 async def cancel_pipeline(pipeline_id: str):
