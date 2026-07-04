@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from ..core.config import settings
@@ -210,13 +213,133 @@ class InstagramPublisher(PlatformPublisher):
 
     async def publish(self, video_path: str, metadata: dict[str, Any]) -> dict[str, Any]:
         logger.info(f"Instagram publish: {video_path}")
-        return {
-            "platform": "instagram",
-            "success": True,
-            "publish_id": f"ig_{abs(hash(video_path))}",
-            "published_at": datetime.now(timezone.utc).isoformat(),
-            "method": "browser",
-        }
+        try:
+            from ..modules.browser_automation.engine import PlaywrightBrowserEngine
+            engine = PlaywrightBrowserEngine()
+            await engine.initialize()
+            await engine.launch(headless=settings.browser_headless)
+
+            page = await engine.get_page()
+            session_path = Path(settings.instagram_session_dir)
+            session_path.mkdir(parents=True, exist_ok=True)
+            state_file = session_path / "ig_state.json"
+
+            await page.goto("https://www.instagram.com", wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(3)
+
+            if state_file.exists():
+                try:
+                    import json as _json
+                    with open(state_file) as _f:
+                        storage = _json.load(_f)
+                    context = page.context
+                    await context.add_cookies(storage.get("cookies", []))
+                    if storage.get("local_storage"):
+                        _val = _json.dumps(storage["local_storage"])
+                        await page.evaluate(f"localStorage.setItem('ig_session', {_val})")
+                    await page.reload(wait_until="domcontentloaded")
+                    await asyncio.sleep(4)
+                    title_lower = (await page.title()).lower()
+                    has_login_form = await page.query_selector('input[name="username"]')
+                    logged_in = "login" not in title_lower and has_login_form is None
+                except Exception as e:
+                    logger.warning(f"Instagram session restore failed: {e}")
+                    logged_in = False
+            else:
+                logged_in = False
+
+            if not logged_in:
+                username = settings.instagram_username or metadata.get("instagram_username", "")
+                password = settings.instagram_password or metadata.get("instagram_password", "")
+                if not username or not password:
+                    raise PublishingError(
+                        "Instagram login required. Set AVF_INSTAGRAM_USERNAME and AVF_INSTAGRAM_PASSWORD "
+                        "in .env, or pass instagram_username/instagram_password in metadata.",
+                        code="INSTA_NO_CREDENTIALS",
+                    )
+                username_input = await page.wait_for_selector('input[name="username"]', timeout=15000)
+                await username_input.fill(username)
+                password_input = await page.wait_for_selector('input[name="password"]', timeout=5000)
+                await password_input.fill(password)
+                await page.click('button[type="submit"]')
+                await asyncio.sleep(6)
+
+                save_info = await page.query_selector('button:has-text("Save Info")')
+                if save_info:
+                    await save_info.click()
+                    await asyncio.sleep(2)
+                not_now = await page.query_selector('button:has-text("Not Now")')
+                if not_now:
+                    await not_now.click()
+                    await asyncio.sleep(2)
+
+                try:
+                    import json as _json
+                    _cookies = await page.context.cookies()
+                    _ls = await page.evaluate("localStorage.getItem('ig_session') or ''")
+                    with open(state_file, "w") as _f:
+                        _json.dump({"cookies": _cookies, "local_storage": _ls}, _f)
+                    logger.info("Instagram session saved")
+                except Exception as e:
+                    logger.warning(f"Failed to save Instagram session: {e}")
+
+            create_btn = await page.wait_for_selector('svg[aria-label="New post"], svg[aria-label="Create"]', timeout=15000)
+            await create_btn.click()
+            await asyncio.sleep(2)
+
+            reel_option = await page.query_selector('span:has-text("Reel")')
+            if reel_option:
+                await reel_option.click()
+                await asyncio.sleep(2)
+
+            file_input = await page.wait_for_selector('input[type="file"]', timeout=10000)
+            await file_input.set_input_files(os.path.abspath(video_path))
+            logger.info("Instagram video file selected, waiting for upload...")
+
+            await asyncio.sleep(5)
+            for _ in range(90):
+                try:
+                    next_btn = await page.query_selector('button:has-text("Next"), div[role="button"]:has-text("Next")')
+                    share_btn = await page.query_selector('button:has-text("Share"), div[role="button"]:has-text("Share")')
+                    if next_btn:
+                        await next_btn.click()
+                        await asyncio.sleep(3)
+                        break
+                    if share_btn:
+                        break
+                    done_spinner = await page.query_selector('div[role="progressbar"]')
+                    if not done_spinner:
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+
+            caption = metadata.get("description", metadata.get("title", ""))
+            if caption:
+                caption_input = await page.query_selector('[aria-label="Write a caption..."], [placeholder="Write a caption..."], div[contenteditable="true"][role="textbox"]')
+                if caption_input:
+                    await caption_input.click()
+                    await asyncio.sleep(1)
+                    await caption_input.type(caption[:2200], delay=30)
+                    await asyncio.sleep(1)
+
+            share_btn = await page.wait_for_selector('button:has-text("Share"), div[role="button"]:has-text("Share")', timeout=30000)
+            await share_btn.click()
+            await asyncio.sleep(5)
+
+            await engine.shutdown()
+
+            return {
+                "platform": "instagram",
+                "success": True,
+                "publish_id": f"ig_{abs(hash(video_path))}",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+                "method": "browser",
+            }
+        except PublishingError:
+            raise
+        except Exception as e:
+            raise PublishingError(f"Instagram browser upload failed: {e}", code="INSTA_BROWSER_ERROR") from e
 
     async def check_status(self, publish_id: str) -> dict[str, Any]:
         return {"publish_id": publish_id, "status": "published", "platform": "instagram"}

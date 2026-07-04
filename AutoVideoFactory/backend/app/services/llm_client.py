@@ -100,6 +100,8 @@ class OpenAIClient(LLMClient):
                 "temperature": kwargs.get("temperature", settings.llm_temperature),
                 "max_tokens": kwargs.get("max_tokens", settings.llm_max_tokens),
             }
+            if "response_format" in kwargs:
+                payload["response_format"] = kwargs["response_format"]
 
             response = await self._http.post(
                 f"{self._base_url}/chat/completions",

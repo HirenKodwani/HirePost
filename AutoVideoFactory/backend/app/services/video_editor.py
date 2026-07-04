@@ -273,6 +273,12 @@ class VideoEditorService:
             if mixed_path != output_path:
                 os.replace(mixed_path, output_path)
 
+        for t in temp_clips:
+            try:
+                os.remove(t)
+            except Exception:
+                pass
+
         return output_path
 
     async def add_subtitles(self, video_path: str, subtitle_path: str, burn_in: bool = True) -> str:

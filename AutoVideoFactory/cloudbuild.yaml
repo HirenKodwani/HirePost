@@ -1,0 +1,41 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/autovideofactory:${SHORT_SHA}"
+      - "-f"
+      - "docker/Dockerfile.cloudrun"
+      - "."
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/autovideofactory:${SHORT_SHA}"
+
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "autovideofactory"
+      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/autovideofactory:${SHORT_SHA}"
+      - "--region=${_REGION}"
+      - "--platform=managed"
+      - "--allow-unauthenticated"
+      - "--memory=4Gi"
+      - "--cpu=2"
+      - "--timeout=600"
+      - "--set-env-vars=AVF_ENVIRONMENT=production,AVF_DEBUG=false,AVF_CONTAINER_MODE=true,AVF_HOST=0.0.0.0,AVF_LLM_PROVIDER=openai,AVF_OPENAI_BASE_URL=https://api.groq.com/openai/v1,AVF_OPENAI_DEFAULT_MODEL=llama-3.3-70b-versatile,AVF_LLM_TEMPERATURE=0.7,AVF_LLM_MAX_TOKENS=8192,AVF_STORAGE_PROVIDER=gcs,AVF_DATABASE_URL=postgresql+asyncpg://autovideofactory:${_DB_PASSWORD}@//cloudsql/${_CLOUD_SQL_CONNECTION}/autovideofactory"
+      - "--set-secrets=AVF_OPENAI_API_KEY=groq-api-key:latest"
+      - "--add-cloudsql-instances=${_CLOUD_SQL_CONNECTION}"
+      - "--service-account=${_SERVICE_ACCOUNT}"
+
+substitutions:
+  _REGION: us-central1
+  _CLOUD_SQL_CONNECTION: your-project:us-central1:autovideofactory-db
+  _DB_PASSWORD: changeme
+  _SERVICE_ACCOUNT: your-service-account@your-project.iam.gserviceaccount.com
+
+options:
+  logging: CLOUD_LOGGING_ONLY

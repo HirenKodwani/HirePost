@@ -1,11 +1,6 @@
 import asyncio, sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 os.environ["AVF_ENVIRONMENT"] = "development"
-os.environ["AVF_LLM_PROVIDER"] = "ollama"
-os.environ["AVF_LLM_MODEL"] = "llama3.2:3b"
-os.environ["AVF_OLLAMA_DEFAULT_MODEL"] = "llama3.2:3b"
-os.environ["AVF_OLLAMA_BASE_URL"] = "http://localhost:11434"
-os.environ["AVF_LLM_MAX_TOKENS"] = "8192"
 
 from app.services.pipeline_orchestrator import ContentPipeline
 

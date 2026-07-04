@@ -170,6 +170,7 @@ class YouTubeAccount(UUIDMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_upload_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     upload_count: Mapped[int] = mapped_column(Integer, default=0)
+    oauth_config: Mapped[str] = mapped_column(String(50), default="default")
 
 
 class Thumbnail(UUIDMixin, TimestampMixin, Base):

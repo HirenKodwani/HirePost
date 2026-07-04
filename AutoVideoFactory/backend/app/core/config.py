@@ -29,6 +29,11 @@ class DatabaseProvider(str, Enum):
     POSTGRESQL = "postgresql"
 
 
+class StorageProvider(str, Enum):
+    LOCAL = "local"
+    GCS = "gcs"
+
+
 class BrowserType(str, Enum):
     CHROMIUM = "chromium"
     FIREFOX = "firefox"
@@ -123,7 +128,7 @@ class Settings(BaseSettings):
 
     # Browser Use (Computer Use Agent)
     browser_use_llm_provider: AIProviderType = AIProviderType.OLLAMA
-    browser_use_llm_model: str = "qwen2.5-vl:72b"
+    browser_use_llm_model: str = "llama3.2:3b"
     browser_use_max_actions: int = 100
     browser_use_use_vision: bool = True
     browser_use_save_traces: bool = True
@@ -167,12 +172,26 @@ class Settings(BaseSettings):
     music_library_path: Optional[str] = None
     royalty_free_music_enabled: bool = True
 
+    # Storage
+    storage_provider: StorageProvider = StorageProvider.LOCAL
+    gcs_bucket_name: Optional[str] = None
+
     # Google / YouTube OAuth
     google_client_id: Optional[str] = None
     google_client_secret: Optional[str] = None
-    google_redirect_uri: str = "http://127.0.0.1:8080/auth/youtube/callback"
+    google_client_id_2: Optional[str] = None
+    google_client_secret_2: Optional[str] = None
+    google_redirect_uri: str = "http://127.0.0.1:8080/api/v1/auth/youtube/callback"
     google_youtube_quota_per_account: int = 10000
     google_youtube_upload_cost: int = 1600
+
+    # Instagram
+    instagram_username: Optional[str] = None
+    instagram_password: Optional[str] = None
+    instagram_session_dir: str = "sessions/instagram"
+
+    # Pixabay
+    pixabay_api_key: Optional[str] = None
 
     # Publishing
     publisher_upload_interval_seconds: int = 30

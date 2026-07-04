@@ -26,43 +26,78 @@ SCOPES = [
 SESSIONS_DIR = Path(settings.sessions_dir) / "youtube"
 
 
+OAUTH_CLIENT_CONFIGS = {}
+
+def _build_oauth_config(client_id: str, client_secret: str, redirect_uri: str) -> dict:
+    return {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uris": [redirect_uri],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+
+def _init_oauth_configs():
+    if settings.google_client_id and settings.google_client_secret:
+        OAUTH_CLIENT_CONFIGS["default"] = {
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+        }
+    if settings.google_client_id_2 and settings.google_client_secret_2:
+        OAUTH_CLIENT_CONFIGS["secondary"] = {
+            "client_id": settings.google_client_id_2,
+            "client_secret": settings.google_client_secret_2,
+        }
+
+_init_oauth_configs()
+
+
 class YouTubeAuthService:
     def __init__(self) -> None:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         self._flows: dict[str, InstalledAppFlow] = {}
 
-    def _make_flow(self, redirect_uri: str) -> InstalledAppFlow:
+    def get_oauth_configs(self) -> list[dict[str, str]]:
+        return [
+            {"id": k, "client_id": v["client_id"]}
+            for k, v in OAUTH_CLIENT_CONFIGS.items()
+        ]
+
+    def _make_flow(self, redirect_uri: str, oauth_config_name: str = "default") -> InstalledAppFlow:
+        config = OAUTH_CLIENT_CONFIGS.get(oauth_config_name)
+        if not config:
+            raise PublishingError(
+                f"OAuth config '{oauth_config_name}' not found. "
+                f"Available: {list(OAUTH_CLIENT_CONFIGS.keys())}",
+                code="OAUTH_NOT_CONFIGURED",
+            )
         flow = InstalledAppFlow.from_client_config(
-            {
-                "installed": {
-                    "client_id": settings.google_client_id,
-                    "client_secret": settings.google_client_secret,
-                    "redirect_uris": [redirect_uri],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-            },
+            _build_oauth_config(config["client_id"], config["client_secret"], redirect_uri),
             SCOPES,
         )
         flow.redirect_uri = redirect_uri
         return flow
 
-    def get_authorization_url(self, redirect_uri: str = "http://localhost:8080/auth/youtube/callback") -> str:
-        if not settings.google_client_id or not settings.google_client_secret:
+    def get_authorization_url(self, redirect_uri: str = "http://localhost:8080/auth/youtube/callback", oauth_config: str = "default") -> str:
+        if not OAUTH_CLIENT_CONFIGS:
             raise PublishingError(
                 "Google OAuth not configured. Set AVF_GOOGLE_CLIENT_ID and AVF_GOOGLE_CLIENT_SECRET",
                 code="OAUTH_NOT_CONFIGURED",
             )
-        flow = self._make_flow(redirect_uri)
+        flow = self._make_flow(redirect_uri, oauth_config)
         auth_url, state = flow.authorization_url(
             access_type="offline",
             prompt="consent",
         )
         self._flows[state] = flow
+        self._flows[f"{state}_config"] = oauth_config
         return auth_url
 
     async def exchange_code(self, code: str, state: str, redirect_uri: str = "http://localhost:8080/auth/youtube/callback") -> dict[str, Any]:
         flow = self._flows.pop(state, None)
+        oauth_config = self._flows.pop(f"{state}_config", "default")
         if not flow:
             raise PublishingError("OAuth session expired. Please re-authorize.", code="OAUTH_SESSION_EXPIRED")
 
@@ -102,10 +137,12 @@ class YouTubeAuthService:
             if existing:
                 existing.refresh_token = refresh_token
                 existing.token_expiry = token_expiry
+                existing.oauth_config = oauth_config
             else:
                 session.add(YouTubeAccount(
                     email=email, channel_name=channel_name,
-                    refresh_token=refresh_token, token_expiry=token_expiry, is_active=True))
+                    refresh_token=refresh_token, token_expiry=token_expiry,
+                    is_active=True, oauth_config=oauth_config))
             await session.commit()
 
         return {"success": True, "email": email, "channel_name": channel_name, "expires_at": token_expiry.isoformat()}
@@ -142,12 +179,16 @@ class YouTubeAuthService:
             if not account:
                 return None
 
+            oauth_cfg = OAUTH_CLIENT_CONFIGS.get(account.oauth_config, {})
+            client_id = oauth_cfg.get("client_id", settings.google_client_id or "")
+            client_secret = oauth_cfg.get("client_secret", settings.google_client_secret or "")
+
             creds = Credentials(
                 token=None,
                 refresh_token=account.refresh_token,
                 token_uri="https://oauth2.googleapis.com/token",
-                client_id=settings.google_client_id,
-                client_secret=settings.google_client_secret,
+                client_id=client_id,
+                client_secret=client_secret,
                 scopes=SCOPES,
             )
 
@@ -156,7 +197,7 @@ class YouTubeAuthService:
                     creds.refresh(Request())
                 except Exception as e:
                     logger.warning(
-                        f"Token refresh failed for {account.email}: {e}"
+                        f"Token refresh failed for {account.email} (config: {account.oauth_config}): {e}"
                     )
                     account.is_active = False
                     await session.commit()

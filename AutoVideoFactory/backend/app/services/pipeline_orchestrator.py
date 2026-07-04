@@ -50,7 +50,8 @@ class ContentPipeline:
         self._llm = get_llm_client()
         self._event_bus = EventBus()
         self._active_pipelines: dict[str, dict[str, Any]] = {}
-        self._music_dir = Path("output/music")
+        music_path = settings.music_library_path or str(settings.project_root / "output" / "music")
+        self._music_dir = Path(music_path)
         for mood_dir in ("energetic", "dramatic", "humorous", "serious", "educational", "generic"):
             (self._music_dir / mood_dir).mkdir(parents=True, exist_ok=True)
 
@@ -99,12 +100,16 @@ class ContentPipeline:
 
             step_results["trend"] = await self._step_trend_research(config.get("niche", "general"))
             step_results["research"] = await self._step_research(config.get("topic", step_results.get("trend", {}).get("trends", [{}])[0].get("title", "AI")))
-            step_results["script"] = await self._step_script_writing(step_results["research"], config.get("duration", 60))
+            style = config.get("style", "comedy")
+            duration = max(config.get("duration", 60), 30)
+            lang = config.get("language", "hinglish")
+            step_results["script"] = await self._step_script_writing(step_results["research"], duration, style, lang)
             step_results["prompts"] = await self._step_prompt_generation(step_results["script"])
+            step_results["trending_tags"] = await self._step_trending_tags(step_results["script"]["title"])
 
             voice_task = self._step_voice_generation(
                 step_results["script"]["content"],
-                step_results["script"].get("mood", "educational"),
+                step_results["script"].get("mood", "humorous"),
             )
             assets_task = self._step_asset_gathering(step_results["prompts"])
             voice_result, assets_result = await asyncio.gather(voice_task, assets_task)
@@ -128,7 +133,9 @@ class ContentPipeline:
                 step_results["publishing"] = await self._step_publishing(
                     step_results["video"]["video_path"],
                     step_results["script"]["title"],
-                    config.get("platforms", ["tiktok"]),
+                    config.get("platforms", ["youtube"]),
+                    script_content=step_results["script"]["content"],
+                    step_results=step_results,
                 )
 
             await self._analytics.track_event("pipeline.completed", {"pipeline_id": pipeline_id, "steps": list(step_results.keys())})
@@ -158,13 +165,19 @@ class ContentPipeline:
         return trends or {"trends": [{"title": f"Trending in {niche}", "score": 85}]}
 
     async def _step_research(self, topic: str) -> dict[str, Any]:
-        research = await self._llm.generate_json(
-            f"Research the topic '{topic}' for a short-form video. "
-            f"Provide a summary, 5 key points, and 3 potential sources.",
-            system_prompt="Return JSON with 'summary', 'key_points' (array of strings), and 'sources' (array of strings).",
-        )
-        if research and research.get("summary"):
-            return research
+        for attempt in range(2):
+            try:
+                research = await self._llm.generate_json(
+                    f"Research the topic '{topic}' for a short-form video. "
+                    f"Provide a summary, 5 key points, and 3 potential sources.",
+                    system_prompt="Return JSON with 'summary', 'key_points' (array of strings), and 'sources' (array of strings).",
+                )
+                if research and research.get("summary"):
+                    return research
+            except Exception as e:
+                logger.warning(f"Research attempt {attempt+1}/2 failed: {e}")
+                if attempt == 0:
+                    await asyncio.sleep(5)
         return {
             "topic": topic,
             "summary": f"Research on {topic}",
@@ -172,8 +185,8 @@ class ContentPipeline:
             "sources": [],
         }
 
-    async def _step_script_writing(self, research: dict, duration: float) -> dict[str, Any]:
-        script = await self._prompt_engine.generate_script(research.get("topic", "unknown"), research, duration)
+    async def _step_script_writing(self, research: dict, duration: float, style: str = "comedy", lang: str = "hinglish") -> dict[str, Any]:
+        script = await self._prompt_engine.generate_script(research.get("topic", "unknown"), research, duration, style=style)
         title = await self._prompt_engine.generate_title(research.get("topic", "unknown"))
         mood = self._classify_mood(script)
         logger.info(f"Detected script mood: {mood}")
@@ -193,35 +206,45 @@ class ContentPipeline:
             if desc:
                 words = desc.split()[:20]
                 clean = " ".join(words)
-                image_prompt = f"Simple illustration of {clean}, clean digital art style"
-                prompts.append({"scene": i, "description": desc, "image_prompt": image_prompt})
+                image_prompt = f"Cinematic photograph of {clean}, 4K, photorealistic, dramatic lighting, high detail, professional photography, vibrant colors"
+                video_search = clean
+                prompts.append({"scene": i, "description": desc, "image_prompt": image_prompt, "video_search": video_search})
         return prompts
 
     async def _step_voice_generation(self, script_content: str, mood: str = "educational") -> dict[str, Any]:
-        return await self._voice.generate_with_mood(script_content[:500], mood=mood)
+        return await self._voice.generate_with_mood(script_content[:2000], mood=mood)
 
     async def _step_asset_gathering(self, prompts: list[dict]) -> dict[str, Any]:
-        provider = ImageProviderRegistry.get("pollinations")
         assets = []
         for p in prompts:
-            try:
-                result = await provider.generate(p.get("image_prompt", ""), width=1024, height=1024)
-                assets.append({
-                    "scene": p["scene"],
-                    "prompt": p.get("image_prompt", ""),
-                    "type": "image",
-                    "file_path": result.get("url", ""),
-                    "provider": "pollinations",
-                })
-            except Exception as e:
-                assets.append({
-                    "scene": p["scene"],
-                    "prompt": p.get("image_prompt", ""),
-                    "type": "image",
-                    "file_path": "",
-                    "provider": "fallback",
-                })
+            video_search = p.get("video_search", p.get("description", ""))
+            image_prompt = p.get("image_prompt", "")
+            asset = await self._try_fetch_asset(p["scene"], video_search, image_prompt)
+            assets.append(asset)
+            await asyncio.sleep(1.5)
         return {"assets": assets}
+
+    async def _try_fetch_asset(self, scene: int, video_search: str, image_prompt: str) -> dict[str, Any]:
+        if settings.pixabay_api_key:
+            try:
+                video_provider = ImageProviderRegistry.get("pixabay_video")
+                result = await video_provider.generate(video_search, orientation="vertical", min_height=720)
+                if result.get("url"):
+                    logger.info(f"Scene {scene}: Pixabay video found")
+                    return {"scene": scene, "prompt": video_search, "type": "video", "file_path": result["url"], "provider": "pixabay_video", "asset_duration": result.get("duration", 10)}
+            except Exception as e:
+                logger.warning(f"Scene {scene}: Pixabay video failed: {e}")
+        try:
+            image_provider = ImageProviderRegistry.get("pollinations")
+            result = await image_provider.generate(
+                image_prompt, width=1080, height=1920, visual_style="cinematic, bollywood"
+            )
+            if result.get("url"):
+                logger.info(f"Scene {scene}: Pollinations image generated")
+                return {"scene": scene, "prompt": image_prompt, "type": "image", "file_path": result["url"], "provider": "pollinations", "asset_duration": 5}
+        except Exception as e:
+            logger.warning(f"Scene {scene}: Pollinations failed: {e}")
+        return {"scene": scene, "prompt": image_prompt, "type": "image", "file_path": "", "provider": "fallback", "asset_duration": 5}
 
     async def _step_video_composition(self, assets: dict, voice: dict, mood: str = "educational") -> dict[str, Any]:
         clips = assets.get("assets", [])
@@ -230,20 +253,26 @@ class ContentPipeline:
         assets_dir.mkdir(parents=True, exist_ok=True)
 
         file_paths = []
+        clip_durations = []
         for i, clip in enumerate(clips):
             url = clip.get("file_path", "")
+            asset_type = clip.get("type", "image")
+            dur = clip.get("asset_duration", 5)
             if url:
-                dest = assets_dir / f"scene_{i}.jpg"
+                ext = "mp4" if asset_type == "video" else "jpg"
+                dest = assets_dir / f"scene_{i}.{ext}"
                 fp = await self._download_asset(url, dest)
                 file_paths.append(fp)
+                clip_durations.append(min(dur, 15))
                 await asyncio.sleep(1.5)
             else:
                 file_paths.append(None)
+                clip_durations.append(5)
 
         composed_clips = []
-        for fp in file_paths:
+        for fp, dur in zip(file_paths, clip_durations):
             if fp and os.path.exists(fp):
-                composed_clips.append({"file_path": fp, "duration": 5})
+                composed_clips.append({"file_path": fp, "duration": dur})
             else:
                 placeholder = await self._editor._create_placeholder(1080, 1920, 5)
                 composed_clips.append({"file_path": placeholder, "duration": 5})
@@ -283,6 +312,13 @@ class ContentPipeline:
             return {"thumbnail_path": thumb_path or ""}
         return {"thumbnail_path": ""}
 
+    async def _step_trending_tags(self, topic: str) -> list[str]:
+        try:
+            tags = await self._prompt_engine.generate_hashtags(topic, count=15)
+            return tags[:15]
+        except Exception:
+            return ["viral", "trending", "funny", "comedy", "hindicomedy", "india"]
+
     async def _step_quality_assurance(self, video_path: str) -> dict[str, Any]:
         score = 85.0
         return {"passed": score >= 70, "score": score, "video_path": video_path}
@@ -295,12 +331,15 @@ class ContentPipeline:
         script_content: str = "",
         step_results: Optional[dict] = None,
     ) -> dict[str, Any]:
+        trending_tags = (step_results or {}).get("trending_tags", [])
+        tag_str = " ".join(f"#{t}" for t in trending_tags[:10])
         description = (
             f"{title}\n\n"
-            f"Auto-generated by AutoVideoFactory\n\n"
-            f"{script_content[:500] if script_content else ''}"
+            f"{tag_str}\n\n"
+            f"{script_content[:500] if script_content else ''}\n\n"
+            f"Subscribe for more!"
         )
-        tags = [title, *[p.capitalize() for p in platforms]]
+        tags = [title, *[p.capitalize() for p in platforms], *trending_tags[:10]]
         metadata = {
             "title": title,
             "description": description.strip(),

@@ -1,9 +1,6 @@
 import asyncio, os
-os.environ["AVF_LLM_PROVIDER"] = "ollama"
-os.environ["AVF_LLM_MODEL"] = "llama3.2:3b"
-os.environ["AVF_OLLAMA_DEFAULT_MODEL"] = "llama3.2:3b"
-os.environ["AVF_OLLAMA_BASE_URL"] = "http://localhost:11434"
-os.environ["AVF_LLM_MAX_TOKENS"] = "8192"
+os.environ.setdefault("AVF_LLM_PROVIDER", "openai")
+os.environ.setdefault("AVF_OPENAI_DEFAULT_MODEL", "llama-3.3-70b-versatile")
 from app.services.pipeline_orchestrator import ContentPipeline
 
 async def t():
