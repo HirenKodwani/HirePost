@@ -22,7 +22,10 @@
 - **Database**: SQLite via aiosqlite at `AVF_DATA_DIR=/tmp/data` — **no Cloud SQL** (saves ~$10/mo)
 - **Storage**: GCS bucket — `AVF_STORAGE_PROVIDER=gcs`, `AVF_GCS_BUCKET_NAME=autovideofactory-{project}`
 - **YouTube token persistence**: OAuth refresh tokens backed up to GCS (`youtube_tokens/backup.json`) and auto-restored on startup
-- **Lifespan startup** (`main.py`): creates `data_dir`, runs `DatabaseEngine.create_all()`, then restores YouTube tokens from GCS backup
+- **Pipeline execution**: Cloud Run Jobs (not service background tasks) — CPU always-on, free tier covers 10,000 runs/month, ~300 daily runs
+- **Schedule**: Cloud Scheduler triggers pipeline job daily at 06:00 UTC
+- **Job script**: `scripts/deploy_job.sh` — sets up Cloud Run Job + Scheduler
+- **Job entrypoint**: `backend/run_job.py` — reads config from `JOB_STYLE`, `JOB_DURATION`, `JOB_LANGUAGE`, `JOB_PUBLISH`, `JOB_PLATFORMS` env vars; restores YouTube tokens before running
 - **CLI**: gcloud required. Run from Google Cloud Shell
 
 ## Recent Improvements (Jul 2026)
