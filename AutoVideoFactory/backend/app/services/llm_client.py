@@ -150,12 +150,22 @@ class OpenAIClient(LLMClient):
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
                 if status == 429 or status >= 500:
+                    # Respect retry-after header when present
+                    retry_after = None
+                    if "retry-after" in e.response.headers:
+                        try:
+                            retry_after = int(e.response.headers["retry-after"])
+                        except (ValueError, TypeError):
+                            pass
+
                     if status == 429 and api_key_count > 1:
                         key_idx = (attempt + 1) % api_key_count
                         logger.warning(f"HTTP 429 on key {attempt % api_key_count}, rotating to key {key_idx}")
-                        await asyncio.sleep(2)
+                        delay = 2 if not retry_after else min(retry_after, 60)
+                        await asyncio.sleep(delay)
                         continue
-                    wait = min(2 ** attempt * 5, 180)
+
+                    wait = retry_after if retry_after else min(2 ** attempt * 5, 180)
                     logger.warning(f"HTTP {status} (attempt {attempt+1}/{max_retries}), retrying in {wait}s")
                     await asyncio.sleep(wait)
                     continue
