@@ -17,19 +17,9 @@ echo "=== Deploying AutoVideoFactory Pipeline Job ==="
 echo "Project: $PROJECT_ID"
 echo "Region: $REGION"
 
-# Create Cloud Run Job
+# Build OAuth env vars from environment
 echo "=== Creating/Updating Cloud Run Job ==="
 gcloud run jobs delete "${JOB_NAME}" --region="${REGION}" --quiet 2>/dev/null || true
-
-gcloud run jobs create "${JOB_NAME}" \
-    --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${SERVICE_NAME}:latest" \
-    --region="${REGION}" \
-    --memory=4Gi \
-    --cpu=2 \
-    --task-timeout=1800 \
-    --max-retries=2 \
-    --set-secrets="AVF_OPENAI_API_KEY=groq-api-key:latest" \
-    --set-secrets="AVF_OPENAI_API_KEY_BACKUP=groq-api-key-backup:latest" \
 OAUTH_ENV_VARS=""
 OAUTH_ENV_VARS+="AVF_PIXABAY_API_KEY=${AVF_PIXABAY_API_KEY:-56515038-180ae2cbb9fdbd51f8ccb3806},"
 if [ -n "${AVF_GOOGLE_CLIENT_ID:-}" ]; then OAUTH_ENV_VARS+="AVF_GOOGLE_CLIENT_ID=${AVF_GOOGLE_CLIENT_ID},"; fi
@@ -44,8 +34,7 @@ gcloud run jobs create "${JOB_NAME}" \
     --cpu=2 \
     --task-timeout=1800 \
     --max-retries=2 \
-    --set-secrets="AVF_OPENAI_API_KEY=groq-api-key:latest" \
-    --set-secrets="AVF_OPENAI_API_KEY_BACKUP=groq-api-key-backup:latest" \
+    --set-secrets="AVF_OPENAI_API_KEY=groq-api-key:latest,AVF_OPENAI_API_KEY_BACKUP=groq-api-key-backup:latest" \
     --update-env-vars="\
 AVF_ENVIRONMENT=production,\
 AVF_CONTAINER_MODE=true,\
