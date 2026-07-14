@@ -89,7 +89,7 @@ class YouTubeAuthService:
             os.unlink(tmp)
             logger.info(f"Backed up {len(backup)} YouTube token(s) to storage")
         except Exception as e:
-            logger.warning(f"Could not backup YouTube tokens: {e}")
+            logger.error(f"Could not backup YouTube tokens: {e}", exc_info=True)
 
     async def _restore_tokens(self) -> int:
         try:
@@ -129,7 +129,7 @@ class YouTubeAuthService:
             logger.info(f"Restored {restored} YouTube token(s) from storage backup")
             return restored
         except Exception as e:
-            logger.warning(f"Could not restore YouTube tokens: {e}")
+            logger.error(f"Could not restore YouTube tokens: {e}", exc_info=True)
             return 0
 
     def get_oauth_configs(self) -> list[dict[str, str]]:
@@ -275,9 +275,14 @@ class YouTubeAuthService:
             if creds.expired or not creds.valid:
                 try:
                     creds.refresh(Request())
+                    if creds.refresh_token and creds.refresh_token != account.refresh_token:
+                        account.refresh_token = creds.refresh_token
+                        await session.commit()
+                        await self._backup_tokens()
                 except Exception as e:
-                    logger.warning(
-                        f"Token refresh failed for {account.email} (config: {account.oauth_config}): {e}"
+                    logger.error(
+                        f"Token refresh failed for {account.email} (config: {account.oauth_config}): {e}",
+                        exc_info=True,
                     )
                     account.is_active = False
                     await session.commit()

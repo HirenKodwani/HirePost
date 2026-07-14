@@ -66,8 +66,11 @@ class YouTubePublisher(PlatformPublisher):
         account_id = metadata.get("youtube_account_id")
         creds = await youtube_auth_service.get_credentials(account_id)
         if not creds:
-            logger.warning("No YouTube credentials available, falling back to browser")
-            return await self._publish_via_browser(video_path, metadata)
+            logger.error("No YouTube credentials available. Re-authorize at /api/v1/auth/youtube/login")
+            raise PublishingError(
+                "No YouTube credentials available. Re-authorize at /api/v1/auth/youtube/login",
+                code="YOUTUBE_NO_CREDENTIALS",
+            )
 
         account_id = account_id or "default"
 
@@ -83,7 +86,11 @@ class YouTubePublisher(PlatformPublisher):
             if fallback_id:
                 metadata["youtube_account_id"] = fallback_id
                 return await self._publish_via_api(video_path, metadata)
-            return await self._publish_via_browser(video_path, metadata)
+            logger.error("All YouTube accounts exhausted their daily quota")
+            raise PublishingError(
+                "All YouTube accounts exhausted their daily quota",
+                code="YOUTUBE_QUOTA_EXHAUSTED",
+            )
 
         try:
             from google.oauth2.credentials import Credentials
@@ -139,46 +146,18 @@ class YouTubePublisher(PlatformPublisher):
             }
         except Exception as e:
             error_str = str(e)
-            logger.warning(f"YouTube API upload failed: {error_str}")
-            if method := metadata.get("method") == "api":
-                raise PublishingError(
-                    f"YouTube API upload failed: {error_str}",
-                    code="YOUTUBE_API_ERROR",
-                ) from e
-            return await self._publish_via_browser(video_path, metadata)
+            logger.error(f"YouTube API upload failed: {error_str}", exc_info=True)
+            raise PublishingError(
+                f"YouTube API upload failed: {error_str}",
+                code="YOUTUBE_API_ERROR",
+            ) from e
 
     async def _publish_via_browser(self, video_path: str, metadata: dict[str, Any]) -> dict[str, Any]:
-        logger.info(f"YouTube browser publish: {video_path}")
-        try:
-            from ..modules.browser_automation.computer_use_agent import ComputerUseAgent
-            agent = ComputerUseAgent()
-
-            title = metadata.get("title", "Untitled")
-            description = metadata.get("description", "")
-            task = (
-                f"Upload video '{title}' to YouTube Studio. Steps: "
-                f"1. Navigate to https://studio.youtube.com "
-                f"2. Click Upload button (top right) "
-                f"3. Select file: {video_path} "
-                f"4. Wait for upload to complete "
-                f"5. Set title: {title} "
-                f"6. Set description: {description} "
-                f"7. Set visibility: {metadata.get('privacy_status', 'public')} "
-                f"8. Click Publish"
-            )
-            result = await agent.ai_navigate("https://studio.youtube.com", task)
-            return {
-                "platform": "youtube",
-                "success": result.get("success", False),
-                "publish_id": f"yt_{abs(hash(video_path))}",
-                "published_at": datetime.now(timezone.utc).isoformat(),
-                "method": "browser",
-            }
-        except Exception as e:
-            raise PublishingError(
-                f"YouTube browser upload failed: {e}",
-                code="YOUTUBE_BROWSER_ERROR",
-            ) from e
+        raise PublishingError(
+            "YouTube browser upload is not supported on Cloud Run. "
+            "Configure OAuth credentials for API upload via AVF_GOOGLE_CLIENT_ID / AVF_GOOGLE_CLIENT_SECRET.",
+            code="YOUTUBE_BROWSER_UNSUPPORTED",
+        )
 
     async def check_status(self, publish_id: str) -> dict[str, Any]:
         if publish_id.startswith("yt_") and len(publish_id) > 10:

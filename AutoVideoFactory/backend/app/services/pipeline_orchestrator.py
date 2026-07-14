@@ -112,7 +112,13 @@ class ContentPipeline:
                 step_results["script"].get("mood", "humorous"),
             )
             assets_task = self._step_asset_gathering(step_results["prompts"])
-            voice_result, assets_result = await asyncio.gather(voice_task, assets_task)
+            voice_result, assets_result = await asyncio.gather(voice_task, assets_task, return_exceptions=True)
+            if isinstance(voice_result, Exception):
+                logger.error(f"Voice generation failed: {voice_result}")
+                raise voice_result
+            if isinstance(assets_result, Exception):
+                logger.error(f"Asset gathering failed: {assets_result}")
+                raise assets_result
             step_results["voice"] = voice_result
             step_results["assets"] = assets_result
 
@@ -123,20 +129,33 @@ class ContentPipeline:
 
             subtitle_task = self._step_subtitle_generation(voice_result)
             thumbnail_task = self._step_thumbnail_generation(step_results["video"])
-            subtitle_result, thumbnail_result = await asyncio.gather(subtitle_task, thumbnail_task)
-            step_results["subtitles"] = subtitle_result
-            step_results["thumbnail"] = thumbnail_result
+            subtitle_result, thumbnail_result = await asyncio.gather(subtitle_task, thumbnail_task, return_exceptions=True)
+            if isinstance(subtitle_result, Exception):
+                logger.error(f"Subtitle generation failed: {subtitle_result}")
+                step_results["subtitles"] = {"segments": []}
+            else:
+                step_results["subtitles"] = subtitle_result
+            if isinstance(thumbnail_result, Exception):
+                logger.error(f"Thumbnail generation failed: {thumbnail_result}")
+                step_results["thumbnail"] = {}
+            else:
+                step_results["thumbnail"] = thumbnail_result
 
             step_results["qa"] = await self._step_quality_assurance(step_results["video"]["video_path"])
 
             if config.get("publish", False):
-                step_results["publishing"] = await self._step_publishing(
+                pub_result = await self._step_publishing(
                     step_results["video"]["video_path"],
                     step_results["script"]["title"],
                     config.get("platforms", ["youtube"]),
                     script_content=step_results["script"]["content"],
                     step_results=step_results,
                 )
+                step_results["publishing"] = pub_result
+                failed = [p for p, r in pub_result.items() if isinstance(r, dict) and not r.get("success")]
+                if failed:
+                    logger.warning(f"Publishing failed for platforms: {failed}")
+                    pipeline["publish_errors"] = {p: pub_result[p].get("error") for p in failed}
 
             await self._analytics.track_event("pipeline.completed", {"pipeline_id": pipeline_id, "steps": list(step_results.keys())})
             await self._learning.record_feedback(
@@ -347,7 +366,7 @@ class ContentPipeline:
             "description": description.strip(),
             "tags": tags,
             "category_id": "22",
-            "privacy_status": "unlisted",
+            "privacy_status": "public",
             "made_for_kids": False,
             "method": "auto",
         }
